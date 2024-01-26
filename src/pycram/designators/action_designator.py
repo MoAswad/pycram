@@ -414,7 +414,6 @@ class PlaceAction(ActionDesignatorDescription):
 
     @dataclasses.dataclass
     class Action(ActionDesignatorDescription.Action):
-
         object_designator: ObjectDesignatorDescription.Object
         """
         Object designator describing the object that should be place
@@ -423,6 +422,11 @@ class PlaceAction(ActionDesignatorDescription):
         """
         Arm that is currently holding the object
         """
+
+        grasp: str
+        """
+        Grasp that was used to pick up the object
+        """
         target_location: Pose
         """
         Pose in the world at which the object should be placed
@@ -430,23 +434,41 @@ class PlaceAction(ActionDesignatorDescription):
 
         @with_tree
         def perform(self) -> None:
-            object_pose = self.object_designator.bullet_world_object.get_pose()
-            local_tf = LocalTransformer()
+            lt = LocalTransformer()
+            robot = BulletWorld.robot
+            # Retrieve object and robot from designators
+            object = self.object_designator.bullet_world_object
+            # oTm = Object Pose in Frame map
+            oTm = self.target_location
 
-            # Transformations such that the target position is the position of the object and not the tcp
-            tcp_to_object = local_tf.transform_pose(object_pose,
-                                                    BulletWorld.robot.get_link_tf_frame(
-                                                        robot_description.get_tool_frame(self.arm)))
-            target_diff = self.target_location.to_transform("target").inverse_times(
-                tcp_to_object.to_transform("object")).to_pose()
+            if self.grasp == "top":
+                oTm.pose.position.z += 0.04
 
-            MoveTCPMotion(target_diff, self.arm).resolve().perform()
-            MoveGripperMotion("open", self.arm).resolve().perform()
-            BulletWorld.robot.detach(self.object_designator.bullet_world_object)
-            retract_pose = local_tf.transform_pose(target_diff,BulletWorld.robot.get_link_tf_frame(
-                                                        robot_description.get_tool_frame(self.arm)))
-            retract_pose.position.x -= 0.07
-            MoveTCPMotion(retract_pose, self.arm).resolve().perform()
+            grasp_rotation = robot_description.grasps.get_orientation_for_grasp(self.grasp)
+            oTb = lt.transform_pose(oTm, robot.get_link_tf_frame("base_link"))
+            oTb.orientation = grasp_rotation
+            oTmG = lt.transform_pose(oTb, "map")
+
+            rospy.logwarn("Placing now")
+            MoveTCPMotion(oTmG, self.arm).resolve().perform()
+
+            tool_frame = robot_description.get_tool_frame(self.arm)
+            special_knowledge_offset = lt.transform_pose(oTmG, robot.get_link_tf_frame(tool_frame))
+            push_base = special_knowledge_offset
+            if robot.name == "hsrb":
+                z = 0.03
+                if self.grasp == "top":
+                    z = 0.07
+                push_base.pose.position.z += z
+            # todo: make this for other robots
+            push_baseTm = lt.transform_pose(push_base, "map")
+            special_knowledge_offsetTm = lt.transform_pose(push_base, "map")
+
+            rospy.logwarn("Pushing now")
+            MoveTCPMotion(push_baseTm, self.arm).resolve().perform()
+
+            rospy.logwarn("Close Gripper")
+            MoveGripperMotion(motion="open", gripper=self.arm).resolve().perform()
 
         def to_sql(self) -> ORMPlaceAction:
             return ORMPlaceAction(self.arm)
@@ -454,45 +476,58 @@ class PlaceAction(ActionDesignatorDescription):
         def insert(self, session, *args, **kwargs) -> ORMPlaceAction:
             action = super().insert(session)
 
-            od = self.object_designator.insert(session)
-            action.object_id = od.id
+            if self.object_designator:
+                od = self.object_designator.insert(session, )
+                action.object = od.id
+            else:
+                action.object = None
 
-            pose = self.target_location.insert(session)
-            action.pose_id = pose.id
+            if self.target_location:
+                position = Position(*self.target_location.position_as_list())
+                orientation = Quaternion(*self.target_location.orientation_as_list())
+                session.add(position)
+                session.add(orientation)
+                session.commit()
+                action.position = position.id
+                action.orientation = orientation.id
+            else:
+                action.position = None
+                action.orientation = None
 
             session.add(action)
             session.commit()
-
             return action
 
     def __init__(self,
                  object_designator_description: Union[ObjectDesignatorDescription, ObjectDesignatorDescription.Object],
-                 target_locations: List[Pose],
-                 arms: List[str], resolver=None):
+                 arms: List[str], grasps: List[str], target_locations: List[Pose], resolver=None):
         """
-        Create an Action Description to place an object
+        Lets the robot pick up an object. The description needs an object designator describing the object that should be
+        picked up, an arm that should be used as well as the grasp from which side the object should be picked up.
 
-        :param object_designator_description: Description of object to place.
-        :param target_locations: List of possible positions/orientations to place the object
-        :param arms: List of possible arms to use
-        :param resolver: Grounding method to resolve this designator
+        :param object_designator_description: List of possible object designator
+        :param arms: List of possible arms that could be used
+        :param grasps: List of possible grasps for the object
+        :param target_locations: List of possible target locations for the object to be placed
+        :param resolver: An optional resolver that returns a performable designator with elements from the lists of possible paramter
         """
         super().__init__(resolver)
         self.object_designator_description: Union[
             ObjectDesignatorDescription, ObjectDesignatorDescription.Object] = object_designator_description
-        self.target_locations: List[Pose] = target_locations
         self.arms: List[str] = arms
+        self.grasps: List[str] = grasps
+        self.target_locations: List[Pose] = target_locations
 
     def ground(self) -> Action:
         """
-        Default resolver that returns a performable designator with the first entries from the list of possible entries.
+        Default resolver, returns a performable designator with the first entries from the lists of possible parameter.
 
         :return: A performable designator
         """
         obj_desig = self.object_designator_description if isinstance(self.object_designator_description,
                                                                      ObjectDesignatorDescription.Object) else self.object_designator_description.resolve()
 
-        return self.Action(obj_desig, self.arms[0], self.target_locations[0])
+        return self.Action(obj_desig, self.arms[0], self.grasps[0], self.target_locations[0])
 
 
 class NavigateAction(ActionDesignatorDescription):
