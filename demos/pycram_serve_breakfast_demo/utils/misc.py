@@ -140,6 +140,7 @@ def try_pick_up(robot: BulletWorld.robot, obj: ObjectDesignatorDescription.Objec
                   [0, 0, 0, 1])]).resolve().perform()
         ParkArmsAction([Arms.LEFT]).resolve().perform()
         MoveGripperMotion(motion="open", gripper="left").resolve().perform()
+        NavigateAction([Pose([4.3, 4.9, 0], [0, 0, 0, 1])]).resolve().perform()
         # try to detect the object again
         LookAtAction(targets=[Pose([obj.pose.position.x, obj.pose.position.y, 0.21], [0, 0, 0, 1])]).resolve().perform()
         object_desig = DetectAction(technique='all').resolve().perform()

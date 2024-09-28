@@ -31,7 +31,7 @@ from ..orm.action_designator import (ParkArmsAction as ORMParkArmsAction, Naviga
 
 from ..orm.base import Quaternion, Position, Base
 from ..plan_failures import ObjectUnfetchable, ReachabilityFailure, EnvironmentUnreachable, GripperClosedCompletely, \
-    SensorMonitoringCondition
+    SensorMonitoringCondition, GripperLowLevelFailure
 from ..pose import Pose
 from ..robot_descriptions import robot_description
 from ..ros.viz_marker_publisher import ManualMarkerPublisher
@@ -391,7 +391,11 @@ class PickUpAction(ActionDesignatorDescription):
 
             # Finalize the pick-up by closing the gripper and lifting the object
             rospy.logwarn("Close Gripper")
-            MoveGripperMotion(motion="close", gripper=self.arm, allow_gripper_collision=True).resolve().perform()
+            try:
+                MoveGripperMotion(motion="close", gripper=self.arm, allow_gripper_collision=True).resolve().perform()
+            except (GripperClosedCompletely, GripperLowLevelFailure):
+                MoveGripperMotion(motion="open", gripper=self.arm).resolve().perform()
+                MoveGripperMotion(motion="close", gripper=self.arm, allow_gripper_collision=True).resolve().perform()
 
             rospy.logwarn("Lifting now")
             liftingTm = push_baseTm

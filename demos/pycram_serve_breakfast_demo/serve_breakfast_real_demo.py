@@ -1,4 +1,7 @@
 from enum import Enum
+
+from pycram.external_interfaces.knowrob import get_table_pose
+from pycram.plan_failures import *
 from pycram.process_module import real_robot, semi_real_robot
 from pycram.ros.robot_state_updater import RobotStateUpdater
 from pycram.ros.viz_marker_publisher import VizMarkerPublisher
@@ -209,8 +212,8 @@ def place_objects(first_placing, objects_list, index, grasp):
                 bowl = get_bowl(final_object_deign)
 
                 if bowl is None:
-                    TalkingMotion(f"I can not find the Metalbowl."
-                                  "I will skip pouring and place the objects on the table").resolve().perform()
+                    TalkingMotion(f"I can not find the Metalbowl.").resolve().perform()
+                    TalkingMotion(f"I will skip pouring and place the objects on the table").resolve().perform()
                     if object_type is "Cutlery":
                         # TODO: nach Variante anpassen
                         # x_pos += 0.3
@@ -219,17 +222,44 @@ def place_objects(first_placing, objects_list, index, grasp):
         if bowl is not None:
             if object_type in ["Cerealbox", "Cronybox", "Milkpackja"]:
                 # TODO: Werte anpassen
-                navigate_to(bowl.pose.position.x - 0.1, 5, "popcorn table")
+                navigate_to(bowl.pose.position.x, 5, "popcorn table")
                 # print(f"arm_roll: {robot.get_joint_state('arm_roll_joint')}")
                 angle = 115
-                if robot.get_pose().pose.position.x > bowl.pose.position.x:
-                    PouringAction([bowl.pose], ["left"], ["right"], [angle]).resolve().perform()
-                else:
-                    PouringAction([bowl.pose], ["left"], ["left"], [angle]).resolve().perform()
+                try:
+                    if robot.get_pose().pose.position.x > bowl.pose.position.x:
+                        direction = "right"
+                    else:
+                        direction = "left"
+                    PouringAction([bowl.pose], ["left"], [direction], [angle]).resolve().perform()
+                except EnvironmentUnreachable:
+                    navigate_to(robot.get_pose().pose.position.x, robot.get_pose().pose.position.y - 0.3,
+                                "popcorn table")
+                    ParkArmsAction([Arms.LEFT]).resolve().perform()
+                    navigate_to(1.6, 4.8, "popcorn table")
+                    object_desig = try_detect(Pose([1.6, 5.9, 0.21], [0, 0, 0.7, 0.7]), False)
+                    bowl = get_bowl(object_desig)
+                    if bowl is not None:
+                        navigate_to(bowl.pose.position.x, 5, "popcorn table")
+                        try:
+                            if robot.get_pose().pose.position.x > bowl.pose.position.x:
+                                direction = "right"
+                            else:
+                                direction = "left"
+                            PouringAction([bowl.pose], ["left"], [direction], [angle]).resolve().perform()
+                        except EnvironmentUnreachable:
+                            navigate_to(robot.get_pose().pose.position.x, robot.get_pose().pose.position.y - 0.3,
+                                        "popcorn table")
+                            ParkArmsAction([Arms.LEFT]).resolve().perform()
+                            TalkingMotion(f"Pouring will be skipped").resolve().perform()
+                            TalkingMotion(f"i can not reach the bowl on the table").resolve().perform()
+                if bowl is not None:
                     # Move away from the table
                     navigate_to(robot.get_pose().pose.position.x, robot.get_pose().pose.position.y - 0.3,
                                 "popcorn table")
-                ParkArmsAction([Arms.LEFT]).resolve().perform()
+                    ParkArmsAction([Arms.LEFT]).resolve().perform()
+                else:
+                    TalkingMotion(f"Pouring will be skipped").resolve().perform()
+                    TalkingMotion(f"i can not find the bowl on the table").resolve().perform()
             else:
                 # TODO: je nach Variante x-pos oder place-pose anpassen
                 # x_pos = bowl.pose.position.x + 0.2
@@ -332,13 +362,25 @@ with ((real_robot)):
 
     # navigate to shelf
     navigate_to(4.3, 4.9, "shelf")
+    try:
+        MoveTorsoAction([0.2]).resolve().perform()
+    except (TorsoLowLevelFailure, TorsoGoalNotReached):
+        ParkArmsAction([Arms.LEFT]).resolve().perform()
+        try:
+            MoveTorsoAction([0.2]).resolve().perform()
+        except (TorsoLowLevelFailure, TorsoGoalNotReached):
+            TalkingMotion(f"I can not move my Torso!").resolve().perform()
+            TalkingMotion(f"I will try to perceive without moving it!").resolve().perform()
     obj_desig = try_detect(Pose([5.25, 4.9, 0.21], [0, 0, 0, 1]), False)
     sorted_obj = sort_objects(obj_desig, wished_sorted_obj_list)
     print(sorted_obj[0].type)
     if sorted_obj[0].type != "Metalbowl":
+        # navigate to shelf
+        navigate_to(4.3, 4.9, "shelf")
         bowl_obj_desig = try_detect(Pose([5.25, 4.9, 0.21], [0, 0, 0, 1]), False)
         sorted_obj = sort_objects(bowl_obj_desig, wished_sorted_obj_list)
         if sorted_obj[0].type != "Metalbowl":
+            MoveGripperMotion("open", "left").resolve().perform()
             TalkingMotion(f"Can you please give me the Metalbowl in the shelf?").resolve().perform()
             time.sleep(4)
             MoveGripperMotion("close", "left").resolve().perform()
